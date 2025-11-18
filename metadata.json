@@ -1,0 +1,8 @@
+{
+  "name": "CaravanLoggen",
+  "description": "En digital hyttebok for campinglivet. Loggfør turene dine, legg til bilder, og se reiseruta på kartet.",
+  "requestFramePermissions": [
+    "camera",
+    "geolocation"
+  ]
+}

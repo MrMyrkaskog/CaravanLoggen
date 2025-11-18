@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Book, 
   Plus, 
@@ -10,7 +10,9 @@ import {
   Trash2, 
   Edit3,
   Navigation,
-  Map as MapIcon
+  Map as MapIcon,
+  X,
+  Clock
 } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import { Trip, JournalEntry, ViewState } from './types';
@@ -134,27 +136,50 @@ const EntryModal: React.FC<{
     onClose: () => void;
     onSave: (entry: JournalEntry) => void;
     tripId: string;
-}> = ({ isOpen, onClose, onSave, tripId }) => {
+    existingEntry?: JournalEntry;
+}> = ({ isOpen, onClose, onSave, tripId, existingEntry }) => {
     const [content, setContent] = useState('');
     const [author, setAuthor] = useState('');
     const [locationName, setLocationName] = useState('');
     const [lat, setLat] = useState<number | null>(null);
     const [lng, setLng] = useState<number | null>(null);
+    const [entryDate, setEntryDate] = useState('');
+    
     const [isImproving, setIsImproving] = useState(false);
     const [isLocating, setIsLocating] = useState(false);
     const [imageBase64, setImageBase64] = useState<string[]>([]);
 
-    // Reset form on open
+    // Initialize form
     useEffect(() => {
         if (isOpen) {
-            setContent('');
-            setAuthor('');
-            setLocationName('');
-            setLat(null);
-            setLng(null);
-            setImageBase64([]);
+            if (existingEntry) {
+                setContent(existingEntry.content);
+                setAuthor(existingEntry.author);
+                setLocationName(existingEntry.location?.name || '');
+                setLat(existingEntry.location?.lat || null);
+                setLng(existingEntry.location?.lng || null);
+                setImageBase64(existingEntry.images || []);
+                
+                // Format existing date for datetime-local input
+                const d = new Date(existingEntry.date);
+                // Adjust for timezone to show correct local time in input
+                const localIso = new Date(d.getTime() - (d.getTimezoneOffset() * 60000)).toISOString().slice(0, 16);
+                setEntryDate(localIso);
+            } else {
+                setContent('');
+                setAuthor('');
+                setLocationName('');
+                setLat(null);
+                setLng(null);
+                setImageBase64([]);
+                
+                // Default to current local time
+                const now = new Date();
+                const localIso = new Date(now.getTime() - (now.getTimezoneOffset() * 60000)).toISOString().slice(0, 16);
+                setEntryDate(localIso);
+            }
         }
-    }, [isOpen]);
+    }, [isOpen, existingEntry]);
 
     const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
@@ -165,6 +190,10 @@ const EntryModal: React.FC<{
             };
             reader.readAsDataURL(file);
         }
+    };
+
+    const removeImage = (indexToRemove: number) => {
+        setImageBase64(prev => prev.filter((_, idx) => idx !== indexToRemove));
     };
 
     const handleAIImprove = async () => {
@@ -210,10 +239,25 @@ const EntryModal: React.FC<{
 
     return (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 overflow-y-auto">
-            <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl p-6 my-8">
-                <h2 className="text-xl font-bold mb-4">Nytt oppslag i hytteboka</h2>
+            <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl p-6 my-8 relative">
+                <h2 className="text-xl font-bold mb-4">
+                    {existingEntry ? 'Rediger oppslag' : 'Nytt oppslag i hytteboka'}
+                </h2>
 
                 <div className="space-y-4">
+                    {/* Date/Time */}
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-2">
+                            <Clock size={16} /> Tidspunkt
+                        </label>
+                        <input 
+                            type="datetime-local"
+                            value={entryDate}
+                            onChange={(e) => setEntryDate(e.target.value)}
+                            className="p-2 border rounded-md w-full sm:w-auto"
+                        />
+                    </div>
+
                     {/* Location Section */}
                     <div className="bg-slate-50 p-4 rounded-md border border-slate-200">
                         <label className="block text-sm font-medium text-slate-700 mb-2 flex items-center gap-2">
@@ -284,7 +328,7 @@ const EntryModal: React.FC<{
                     {/* Images */}
                     <div>
                         <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-2">
-                            <ImageIcon size={16} /> Legg til bilde
+                            <ImageIcon size={16} /> Bilder
                         </label>
                         <input 
                             type="file" 
@@ -299,9 +343,17 @@ const EntryModal: React.FC<{
                             "
                         />
                         {imageBase64.length > 0 && (
-                            <div className="mt-2 flex gap-2 overflow-x-auto py-2">
+                            <div className="mt-3 flex gap-2 overflow-x-auto py-2">
                                 {imageBase64.map((img, idx) => (
-                                    <img key={idx} src={img} alt="Preview" className="h-20 w-20 object-cover rounded-md border" />
+                                    <div key={idx} className="relative shrink-0">
+                                        <img src={img} alt="Preview" className="h-20 w-20 object-cover rounded-md border" />
+                                        <button 
+                                            onClick={() => removeImage(idx)}
+                                            className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full p-0.5 shadow-md hover:bg-red-600"
+                                        >
+                                            <X size={12} />
+                                        </button>
+                                    </div>
                                 ))}
                             </div>
                         )}
@@ -312,10 +364,13 @@ const EntryModal: React.FC<{
                     <button onClick={onClose} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-md">Avbryt</button>
                     <button 
                         onClick={() => {
+                            // Handle save
+                            const isoDate = new Date(entryDate).toISOString();
+                            
                             onSave({
-                                id: uuidv4(),
+                                id: existingEntry?.id || uuidv4(),
                                 tripId,
-                                date: new Date().toISOString(),
+                                date: isoDate,
                                 content,
                                 author,
                                 images: imageBase64,
@@ -325,7 +380,7 @@ const EntryModal: React.FC<{
                         }}
                         className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
                     >
-                        Skriv i boka
+                        {existingEntry ? 'Lagre endringer' : 'Skriv i boka'}
                     </button>
                 </div>
             </div>
@@ -340,6 +395,7 @@ const App: React.FC = () => {
     const [trips, setTrips] = useState<Trip[]>([]);
     const [activeTrip, setActiveTrip] = useState<Trip | null>(null);
     const [tripEntries, setTripEntries] = useState<JournalEntry[]>([]);
+    const [entryToEdit, setEntryToEdit] = useState<JournalEntry | undefined>(undefined);
     
     const [isTripModalOpen, setIsTripModalOpen] = useState(false);
     const [isEntryModalOpen, setIsEntryModalOpen] = useState(false);
@@ -378,6 +434,12 @@ const App: React.FC = () => {
         if (activeTrip) {
             setTripEntries(storage.getEntriesForTrip(activeTrip.id));
         }
+        setEntryToEdit(undefined);
+    };
+
+    const handleEditEntry = (entry: JournalEntry) => {
+        setEntryToEdit(entry);
+        setIsEntryModalOpen(true);
     };
 
     const handleDeleteEntry = (id: string) => {
@@ -387,6 +449,11 @@ const App: React.FC = () => {
                 setTripEntries(storage.getEntriesForTrip(activeTrip.id));
             }
         }
+    }
+
+    const closeEntryModal = () => {
+        setIsEntryModalOpen(false);
+        setEntryToEdit(undefined);
     }
 
     // --- Views ---
@@ -457,13 +524,16 @@ const App: React.FC = () => {
     const renderTripDetail = () => {
         if (!activeTrip) return null;
 
-        // Map markers need simple objects
+        // Map markers - Prepare rich data for the map
         const mapEntries = tripEntries
             .filter(e => e.location)
             .map(e => ({
                 lat: e.location!.lat,
                 lng: e.location!.lng,
-                title: e.location!.name
+                title: e.location!.name,
+                date: e.date,
+                thumbnail: e.images && e.images.length > 0 ? e.images[0] : undefined,
+                snippet: e.content.length > 100 ? e.content.substring(0, 97) + '...' : e.content
             }));
             
         // Beregn rute kronologisk (Eldst -> Nyest) for å tegne linjen i riktig rekkefølge.
@@ -522,19 +592,35 @@ const App: React.FC = () => {
 
                             {tripEntries.map((entry) => (
                                 <div key={entry.id} className="bg-white shadow-sm border border-amber-100 rounded-lg overflow-hidden relative group">
-                                    {/* Delete Button */}
-                                    <button 
-                                        onClick={() => handleDeleteEntry(entry.id)}
-                                        className="absolute top-2 right-2 p-1 text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
-                                    >
-                                        <Trash2 size={16} />
-                                    </button>
+                                    {/* Action Buttons */}
+                                    <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-white/80 rounded-md p-1 shadow-sm z-10">
+                                        <button 
+                                            onClick={() => handleEditEntry(entry)}
+                                            className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded"
+                                            title="Rediger"
+                                        >
+                                            <Edit3 size={16} />
+                                        </button>
+                                        <button 
+                                            onClick={() => handleDeleteEntry(entry.id)}
+                                            className="p-1.5 text-slate-500 hover:text-red-600 hover:bg-red-50 rounded"
+                                            title="Slett"
+                                        >
+                                            <Trash2 size={16} />
+                                        </button>
+                                    </div>
 
                                     {/* Header */}
                                     <div className="bg-amber-100/50 px-6 py-3 border-b border-amber-100 flex justify-between items-center">
-                                        <div className="flex items-center gap-2 text-amber-900 font-semibold">
-                                            <Calendar size={16} />
-                                            <span>{new Date(entry.date).toLocaleDateString('no-NO', { weekday: 'long', day: 'numeric', month: 'long' })}</span>
+                                        <div className="flex items-center gap-3 text-amber-900 font-semibold">
+                                            <div className="flex items-center gap-1">
+                                                <Calendar size={16} />
+                                                <span>{new Date(entry.date).toLocaleDateString('no-NO', { weekday: 'long', day: 'numeric', month: 'long' })}</span>
+                                            </div>
+                                            <div className="flex items-center gap-1 text-sm font-normal opacity-80">
+                                                <Clock size={14} />
+                                                <span>kl. {new Date(entry.date).toLocaleTimeString('no-NO', { hour: '2-digit', minute: '2-digit' })}</span>
+                                            </div>
                                         </div>
                                         {entry.location && (
                                             <div className="flex items-center gap-1 text-sm text-amber-800 bg-white/50 px-2 py-1 rounded-full">
@@ -582,15 +668,16 @@ const App: React.FC = () => {
                 isOpen={isTripModalOpen} 
                 onClose={() => setIsTripModalOpen(false)} 
                 onSave={handleSaveTrip}
-                existingTrip={undefined} // Could extend to edit later
+                existingTrip={undefined} 
             />
 
             {activeTrip && (
                 <EntryModal 
                     isOpen={isEntryModalOpen}
-                    onClose={() => setIsEntryModalOpen(false)}
+                    onClose={closeEntryModal}
                     onSave={handleSaveEntry}
                     tripId={activeTrip.id}
+                    existingEntry={entryToEdit}
                 />
             )}
         </>

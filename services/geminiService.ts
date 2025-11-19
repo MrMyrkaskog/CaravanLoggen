@@ -123,6 +123,7 @@ export const parseCoordinatesFromAI = async (text: string): Promise<{lat: number
             }
         });
         
+        if (!response.text) return null;
         return JSON.parse(response.text);
     } catch (e) {
         return null;

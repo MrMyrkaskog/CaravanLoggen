@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, useMap, Polyline } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, useMap, Polyline, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 
 // Fix for default marker icons in Leaflet with Webpack/React
@@ -26,6 +26,7 @@ interface MapProps {
     entries: MapEntryData[];
     route?: { lat: number; lng: number }[];
     zoom?: number;
+    onMapClick?: (lat: number, lng: number) => void;
 }
 
 // Component to automatically zoom/pan to fit all markers
@@ -47,7 +48,19 @@ const FitBounds = ({ entries }: { entries: MapEntryData[] }) => {
     return null;
 };
 
-const MapComponent: React.FC<MapProps> = ({ entries, route, zoom }) => {
+// Component to handle map clicks
+const MapClickHandler = ({ onMapClick }: { onMapClick?: (lat: number, lng: number) => void }) => {
+    useMapEvents({
+        click(e) {
+            if (onMapClick) {
+                onMapClick(e.latlng.lat, e.latlng.lng);
+            }
+        },
+    });
+    return null;
+};
+
+const MapComponent: React.FC<MapProps> = ({ entries, route, zoom, onMapClick }) => {
     // Default center (somewhere in Norway) if no entries
     const defaultCenter: [number, number] = [65.4720, 12.4689]; 
     const mapCenter = (entries.length > 0 ? [entries[0].lat, entries[0].lng] : defaultCenter) as [number, number];
@@ -55,13 +68,14 @@ const MapComponent: React.FC<MapProps> = ({ entries, route, zoom }) => {
     const polylinePositions = route ? route.map(p => [p.lat, p.lng] as [number, number]) : [];
 
     return (
-        <MapContainer center={mapCenter} zoom={zoom || 5} scrollWheelZoom={true} style={{ height: "100%", width: "100%", borderRadius: "0" }}>
+        <MapContainer center={mapCenter} zoom={zoom || 5} scrollWheelZoom={true} style={{ height: "100%", width: "100%", borderRadius: "0", cursor: onMapClick ? "crosshair" : "grab" }}>
             <TileLayer
                 attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                 url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
             />
             
             <FitBounds entries={entries} />
+            <MapClickHandler onMapClick={onMapClick} />
             
             {polylinePositions.length > 1 && (
                 <Polyline 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Book, 
   Plus, 
@@ -12,13 +12,100 @@ import {
   Navigation,
   Map as MapIcon,
   X,
-  Clock
+  Clock,
+  Share2,
+  QrCode,
+  LogOut,
+  User as UserIcon,
+  Loader2,
+  Mail
 } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
-import { Trip, JournalEntry, ViewState } from './types';
+import { Trip, JournalEntry, ViewState, User } from './types';
 import * as storage from './services/storageService';
 import * as gemini from './services/geminiService';
+import { supabase } from './services/supabaseClient';
 import MapComponent from './components/MapComponent';
+
+// --- Auth Component ---
+
+const AuthScreen: React.FC<{ onLogin: () => void }> = ({ onLogin }) => {
+    const [email, setEmail] = useState('');
+    const [loading, setLoading] = useState(false);
+    const [message, setMessage] = useState('');
+
+    const handleLogin = async (e: React.FormEvent) => {
+        e.preventDefault();
+        setLoading(true);
+        setMessage('');
+        
+        try {
+            const { error } = await supabase.auth.signInWithOtp({ 
+                email,
+                options: {
+                    // In a real hosted app, this would be your actual URL
+                    emailRedirectTo: window.location.origin 
+                }
+            });
+            
+            if (error) throw error;
+            setMessage('Sjekk e-posten din for innloggingslink!');
+        } catch (error: any) {
+            setMessage(error.message || 'En feil oppstod');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
+            <div className="bg-white p-8 rounded-xl shadow-lg max-w-md w-full">
+                <div className="text-center mb-8">
+                    <div className="inline-flex p-4 bg-blue-50 rounded-full mb-4">
+                        <Book className="text-blue-600" size={40} />
+                    </div>
+                    <h1 className="text-2xl font-bold text-slate-800">CaravanLoggen</h1>
+                    <p className="text-slate-500">Din digitale hyttebok på veien</p>
+                </div>
+
+                {message ? (
+                    <div className="bg-green-50 text-green-800 p-4 rounded-lg text-center border border-green-200">
+                        <p className="font-medium">{message}</p>
+                        <p className="text-sm mt-2 opacity-80">Du kan lukke dette vinduet.</p>
+                    </div>
+                ) : (
+                    <form onSubmit={handleLogin} className="space-y-4">
+                        <div>
+                            <label className="block text-sm font-medium text-slate-700 mb-1">E-postadresse</label>
+                            <div className="relative">
+                                <Mail className="absolute left-3 top-3 text-slate-400" size={20} />
+                                <input 
+                                    type="email" 
+                                    required
+                                    className="w-full pl-10 pr-4 py-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                                    placeholder="deg@eksempel.no"
+                                    value={email}
+                                    onChange={(e) => setEmail(e.target.value)}
+                                />
+                            </div>
+                        </div>
+                        <button 
+                            type="submit" 
+                            disabled={loading}
+                            className="w-full bg-blue-600 text-white py-2.5 rounded-lg font-semibold hover:bg-blue-700 transition-colors disabled:opacity-70 flex justify-center items-center gap-2"
+                        >
+                            {loading && <Loader2 className="animate-spin" size={20} />}
+                            {loading ? 'Sender...' : 'Send meg innloggingslink'}
+                        </button>
+                        <p className="text-xs text-center text-slate-500 mt-4">
+                            Vi sender deg en "Magisk Link". Du trenger ikke passord.
+                        </p>
+                    </form>
+                )}
+            </div>
+        </div>
+    );
+};
 
 // --- Components ---
 
@@ -27,9 +114,12 @@ const TripModal: React.FC<{
     isOpen: boolean;
     onClose: () => void;
     onSave: (trip: Trip) => void;
+    currentUser: User;
     existingTrip?: Trip;
-}> = ({ isOpen, onClose, onSave, existingTrip }) => {
+    isSaving: boolean;
+}> = ({ isOpen, onClose, onSave, currentUser, existingTrip, isSaving }) => {
     const [title, setTitle] = useState('');
+    const [location, setLocation] = useState('');
     const [description, setDescription] = useState('');
     const [startDate, setStartDate] = useState(new Date().toISOString().split('T')[0]);
     const [isGeneratingTitle, setIsGeneratingTitle] = useState(false);
@@ -38,10 +128,12 @@ const TripModal: React.FC<{
         if (isOpen) {
             if (existingTrip) {
                 setTitle(existingTrip.title);
+                setLocation(existingTrip.location || '');
                 setDescription(existingTrip.description);
                 setStartDate(existingTrip.startDate);
             } else {
                 setTitle('');
+                setLocation('');
                 setDescription('');
                 setStartDate(new Date().toISOString().split('T')[0]);
             }
@@ -71,6 +163,17 @@ const TripModal: React.FC<{
                             className="w-full p-2 border rounded-md"
                             value={startDate}
                             onChange={(e) => setStartDate(e.target.value)}
+                        />
+                    </div>
+
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Reisemål / Sted</label>
+                        <input 
+                            type="text" 
+                            className="w-full p-2 border rounded-md"
+                            placeholder="F.eks. Vestlandet eller Danmark"
+                            value={location}
+                            onChange={(e) => setLocation(e.target.value)}
                         />
                     </div>
                     
@@ -108,21 +211,25 @@ const TripModal: React.FC<{
                 </div>
 
                 <div className="mt-6 flex justify-end space-x-3">
-                    <button onClick={onClose} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-md">Avbryt</button>
+                    <button onClick={onClose} disabled={isSaving} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-md">Avbryt</button>
                     <button 
                         onClick={() => {
                             onSave({
                                 id: existingTrip?.id || uuidv4(),
+                                ownerId: existingTrip?.ownerId || currentUser.id,
                                 title: title || 'Uten navn',
+                                location: location,
                                 description,
                                 startDate,
-                                endDate: existingTrip?.endDate
+                                endDate: existingTrip?.endDate,
+                                shareCode: existingTrip?.shareCode || uuidv4().substring(0, 8)
                             });
-                            onClose();
                         }}
-                        className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+                        disabled={isSaving}
+                        className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-70 flex items-center gap-2"
                     >
-                        Lagre
+                        {isSaving && <Loader2 size={16} className="animate-spin" />}
+                        {isSaving ? 'Lagrer...' : 'Lagre'}
                     </button>
                 </div>
             </div>
@@ -130,14 +237,57 @@ const TripModal: React.FC<{
     );
 };
 
-// 2. Entry Form Modal
+// 2. Share Modal
+const ShareModal: React.FC<{
+    isOpen: boolean;
+    onClose: () => void;
+    trip: Trip;
+}> = ({ isOpen, onClose, trip }) => {
+    if (!isOpen) return null;
+
+    // Simple QR for demo
+    const qrData = `https://caravanloggen.app/join/${trip.shareCode}`;
+    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(qrData)}`;
+
+    return (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-6 text-center">
+                <div className="flex justify-between items-center mb-4">
+                    <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                        <QrCode size={20} /> Gjestetilgang
+                    </h3>
+                    <button onClick={onClose} className="text-slate-400 hover:text-slate-600">
+                        <X size={24} />
+                    </button>
+                </div>
+                
+                <p className="text-slate-600 text-sm mb-6">
+                    Vis denne QR-koden til gjester i vogna.
+                </p>
+
+                <div className="bg-white p-4 rounded-lg border border-slate-200 inline-block mb-6 shadow-inner">
+                    <img src={qrUrl} alt="QR Code" className="w-48 h-48" />
+                </div>
+
+                <div className="bg-blue-50 text-blue-800 p-3 rounded-md text-xs font-mono break-all">
+                    {qrData}
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// 3. Entry Form Modal
 const EntryModal: React.FC<{
     isOpen: boolean;
     onClose: () => void;
     onSave: (entry: JournalEntry) => void;
     tripId: string;
+    currentUser: User;
     existingEntry?: JournalEntry;
-}> = ({ isOpen, onClose, onSave, tripId, existingEntry }) => {
+    initialLocation?: { lat: number, lng: number };
+    isSaving: boolean;
+}> = ({ isOpen, onClose, onSave, tripId, currentUser, existingEntry, initialLocation, isSaving }) => {
     const [content, setContent] = useState('');
     const [author, setAuthor] = useState('');
     const [locationName, setLocationName] = useState('');
@@ -160,26 +310,31 @@ const EntryModal: React.FC<{
                 setLng(existingEntry.location?.lng || null);
                 setImageBase64(existingEntry.images || []);
                 
-                // Format existing date for datetime-local input
                 const d = new Date(existingEntry.date);
-                // Adjust for timezone to show correct local time in input
                 const localIso = new Date(d.getTime() - (d.getTimezoneOffset() * 60000)).toISOString().slice(0, 16);
                 setEntryDate(localIso);
             } else {
                 setContent('');
-                setAuthor('');
-                setLocationName('');
-                setLat(null);
-                setLng(null);
+                setAuthor(currentUser.name);
+                
                 setImageBase64([]);
                 
-                // Default to current local time
+                if (initialLocation) {
+                    setLat(initialLocation.lat);
+                    setLng(initialLocation.lng);
+                    setLocationName("Valgt fra kart");
+                } else {
+                    setLat(null);
+                    setLng(null);
+                    setLocationName('');
+                }
+                
                 const now = new Date();
                 const localIso = new Date(now.getTime() - (now.getTimezoneOffset() * 60000)).toISOString().slice(0, 16);
                 setEntryDate(localIso);
             }
         }
-    }, [isOpen, existingEntry]);
+    }, [isOpen, existingEntry, initialLocation, currentUser]);
 
     const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
@@ -245,7 +400,6 @@ const EntryModal: React.FC<{
                 </h2>
 
                 <div className="space-y-4">
-                    {/* Date/Time */}
                     <div>
                         <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-2">
                             <Clock size={16} /> Tidspunkt
@@ -258,7 +412,6 @@ const EntryModal: React.FC<{
                         />
                     </div>
 
-                    {/* Location Section */}
                     <div className="bg-slate-50 p-4 rounded-md border border-slate-200">
                         <label className="block text-sm font-medium text-slate-700 mb-2 flex items-center gap-2">
                             <MapPin size={16} /> Sted / Lokasjon
@@ -293,7 +446,6 @@ const EntryModal: React.FC<{
                         )}
                     </div>
 
-                    {/* Content Section */}
                     <div>
                         <div className="flex justify-between items-center mb-1">
                             <label className="block text-sm font-medium text-gray-700">Journalnotat</label>
@@ -313,7 +465,6 @@ const EntryModal: React.FC<{
                         />
                     </div>
 
-                    {/* Author */}
                     <div>
                         <label className="block text-sm font-medium text-gray-700 mb-1">Skrevet av</label>
                         <input 
@@ -325,7 +476,6 @@ const EntryModal: React.FC<{
                         />
                     </div>
 
-                    {/* Images */}
                     <div>
                         <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-2">
                             <ImageIcon size={16} /> Bilder
@@ -361,26 +511,26 @@ const EntryModal: React.FC<{
                 </div>
 
                 <div className="mt-6 flex justify-end space-x-3">
-                    <button onClick={onClose} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-md">Avbryt</button>
+                    <button onClick={onClose} disabled={isSaving} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-md">Avbryt</button>
                     <button 
                         onClick={() => {
-                            // Handle save
                             const isoDate = new Date(entryDate).toISOString();
-                            
                             onSave({
                                 id: existingEntry?.id || uuidv4(),
                                 tripId,
                                 date: isoDate,
                                 content,
                                 author,
+                                authorId: currentUser.id,
                                 images: imageBase64,
                                 location: (lat && lng) ? { lat, lng, name: locationName } : undefined
                             });
-                            onClose();
                         }}
-                        className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+                        disabled={isSaving}
+                        className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-70 flex items-center gap-2"
                     >
-                        {existingEntry ? 'Lagre endringer' : 'Skriv i boka'}
+                        {isSaving && <Loader2 size={16} className="animate-spin" />}
+                        {isSaving ? 'Lagrer...' : (existingEntry ? 'Lagre endringer' : 'Skriv i boka')}
                     </button>
                 </div>
             </div>
@@ -392,139 +542,280 @@ const EntryModal: React.FC<{
 
 const App: React.FC = () => {
     const [view, setView] = useState<ViewState>(ViewState.DASHBOARD);
+    
+    // Data State
     const [trips, setTrips] = useState<Trip[]>([]);
     const [activeTrip, setActiveTrip] = useState<Trip | null>(null);
     const [tripEntries, setTripEntries] = useState<JournalEntry[]>([]);
-    const [entryToEdit, setEntryToEdit] = useState<JournalEntry | undefined>(undefined);
     
+    // UI State
+    const [isLoading, setIsLoading] = useState(true);
+    const [isSaving, setIsSaving] = useState(false);
+    const [entryToEdit, setEntryToEdit] = useState<JournalEntry | undefined>(undefined);
+    const [clickedMapLocation, setClickedMapLocation] = useState<{lat: number, lng: number} | undefined>(undefined);
+    
+    // User State
+    const [currentUser, setCurrentUser] = useState<User | null>(null);
+    const [isAuthChecking, setIsAuthChecking] = useState(true);
+    
+    // Modals
     const [isTripModalOpen, setIsTripModalOpen] = useState(false);
     const [isEntryModalOpen, setIsEntryModalOpen] = useState(false);
+    const [isShareModalOpen, setIsShareModalOpen] = useState(false);
 
+    // Auth Check & Initial Load
     useEffect(() => {
-        setTrips(storage.getTrips());
+        const checkAuth = async () => {
+            setIsAuthChecking(true);
+            const user = await storage.getCurrentUser();
+            setCurrentUser(user);
+            setIsAuthChecking(false);
+        };
+        
+        checkAuth();
+
+        // Listen for auth changes
+        const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
+             if (event === 'SIGNED_IN' || event === 'SIGNED_OUT') {
+                 const user = await storage.getCurrentUser();
+                 setCurrentUser(user);
+             }
+        });
+
+        return () => {
+            authListener.subscription.unsubscribe();
+        };
     }, []);
 
+    // Load Data when user is logged in
+    useEffect(() => {
+        if (currentUser) {
+            const loadData = async () => {
+                setIsLoading(true);
+                try {
+                    const loadedTrips = await storage.getTrips();
+                    setTrips(loadedTrips);
+                } finally {
+                    setIsLoading(false);
+                }
+            };
+            loadData();
+        }
+    }, [currentUser]);
+
+    // Load Entries when Trip Changes
     useEffect(() => {
         if (activeTrip) {
-            setTripEntries(storage.getEntriesForTrip(activeTrip.id));
+            const loadEntries = async () => {
+                setIsLoading(true);
+                try {
+                    const entries = await storage.getEntriesForTrip(activeTrip.id);
+                    setTripEntries(entries);
+                } finally {
+                    setIsLoading(false);
+                }
+            };
+            loadEntries();
         }
     }, [activeTrip]);
 
-    const handleSaveTrip = (trip: Trip) => {
-        storage.saveTrip(trip);
-        setTrips(storage.getTrips());
-        setActiveTrip(trip); // Switch to new trip immediately
-        setView(ViewState.TRIP_DETAIL);
+    const handleLogout = async () => {
+        await storage.signOut();
+        setCurrentUser(null);
+        setView(ViewState.DASHBOARD);
+    }
+
+    const handleSaveTrip = async (trip: Trip) => {
+        setIsSaving(true);
+        try {
+            await storage.saveTrip(trip);
+            const updatedTrips = await storage.getTrips();
+            setTrips(updatedTrips);
+            setActiveTrip(trip); 
+            setView(ViewState.TRIP_DETAIL);
+            setIsTripModalOpen(false);
+        } catch (e) {
+            console.error(e);
+            alert("Feil ved lagring av tur");
+        } finally {
+            setIsSaving(false);
+        }
     };
 
-    const handleDeleteTrip = (e: React.MouseEvent, id: string) => {
+    const handleDeleteTrip = async (e: React.MouseEvent, id: string) => {
         e.stopPropagation();
         if (confirm("Er du sikker på at du vil slette denne turen og alle oppføringer?")) {
-            storage.deleteTrip(id);
-            setTrips(storage.getTrips());
+            setIsLoading(true);
+            await storage.deleteTrip(id);
+            const updatedTrips = await storage.getTrips();
+            setTrips(updatedTrips);
             if (activeTrip?.id === id) {
                 setView(ViewState.DASHBOARD);
                 setActiveTrip(null);
             }
+            setIsLoading(false);
         }
     };
 
-    const handleSaveEntry = (entry: JournalEntry) => {
-        storage.saveEntry(entry);
-        if (activeTrip) {
-            setTripEntries(storage.getEntriesForTrip(activeTrip.id));
+    const handleSaveEntry = async (entry: JournalEntry) => {
+        setIsSaving(true);
+        try {
+            await storage.saveEntry(entry);
+            if (activeTrip) {
+                const entries = await storage.getEntriesForTrip(activeTrip.id);
+                setTripEntries(entries);
+            }
+            setEntryToEdit(undefined);
+            setClickedMapLocation(undefined);
+            setIsEntryModalOpen(false);
+        } catch (e) {
+            console.error(e);
+            alert("Kunne ikke lagre. Pass på at bildene ikke er for store.");
+        } finally {
+            setIsSaving(false);
         }
-        setEntryToEdit(undefined);
     };
 
     const handleEditEntry = (entry: JournalEntry) => {
+        if (!currentUser) return;
+        // Simple permission check - in real app, strict RLS applies
+        const canEdit = entry.authorId === currentUser.id || currentUser.role === 'OWNER';
+        
+        if (!canEdit) {
+            alert("Du kan bare redigere dine egne innlegg.");
+            return;
+        }
         setEntryToEdit(entry);
+        setClickedMapLocation(undefined);
         setIsEntryModalOpen(true);
     };
 
-    const handleDeleteEntry = (id: string) => {
+    const handleDeleteEntry = async (entry: JournalEntry) => {
+        if (!currentUser) return;
+        const canDelete = entry.authorId === currentUser.id || currentUser.role === 'OWNER';
+
+        if (!canDelete) {
+            alert("Du kan ikke slette dette innlegget.");
+            return;
+        }
+        
         if (confirm("Slette oppslag?")) {
-            storage.deleteEntry(id);
+            setIsLoading(true);
+            await storage.deleteEntry(entry.id);
             if (activeTrip) {
-                setTripEntries(storage.getEntriesForTrip(activeTrip.id));
+                const entries = await storage.getEntriesForTrip(activeTrip.id);
+                setTripEntries(entries);
             }
+            setIsLoading(false);
         }
     }
 
     const closeEntryModal = () => {
         setIsEntryModalOpen(false);
         setEntryToEdit(undefined);
+        setClickedMapLocation(undefined);
+    }
+    
+    const handleMapClick = (lat: number, lng: number) => {
+        setClickedMapLocation({ lat, lng });
+        setEntryToEdit(undefined);
+        setIsEntryModalOpen(true);
     }
 
-    // --- Views ---
+    // --- Render ---
+
+    if (isAuthChecking) {
+        return <div className="h-screen flex items-center justify-center"><Loader2 className="animate-spin text-blue-600" size={48} /></div>;
+    }
+
+    if (!currentUser) {
+        return <AuthScreen onLogin={() => {}} />;
+    }
 
     const renderDashboard = () => (
         <div className="container mx-auto px-4 py-8 max-w-5xl">
-            <header className="mb-10 flex justify-between items-end">
+            <header className="mb-10 flex justify-between items-center">
                 <div>
                     <h1 className="text-4xl font-bold text-slate-800 mb-2 flex items-center gap-3">
                         <Book className="text-blue-600" size={40} /> CaravanLoggen
                     </h1>
-                    <p className="text-slate-500">Din digitale hyttebok på hjul</p>
+                    <p className="text-slate-500">Innlogget som {currentUser.name}</p>
                 </div>
-                <button 
-                    onClick={() => setIsTripModalOpen(true)}
-                    className="bg-blue-600 text-white px-5 py-3 rounded-lg shadow-md hover:bg-blue-700 flex items-center gap-2 font-medium transition-colors"
-                >
-                    <Plus size={20} /> Ny tur
-                </button>
-            </header>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {trips.length === 0 && (
-                    <div className="col-span-full text-center py-20 bg-slate-100 rounded-xl border-2 border-dashed border-slate-300">
-                        <div className="inline-block p-4 bg-white rounded-full mb-4 shadow-sm">
-                            <MapIcon className="text-slate-400" size={48} />
-                        </div>
-                        <h3 className="text-xl font-semibold text-slate-700 mb-2">Ingen turer enda</h3>
-                        <p className="text-slate-500 mb-6">Start din første reise for å fylle opp hytteboka.</p>
-                        <button onClick={() => setIsTripModalOpen(true)} className="text-blue-600 font-medium hover:underline">Opprett ny tur</button>
-                    </div>
-                )}
-                
-                {trips.map(trip => (
-                    <div 
-                        key={trip.id} 
-                        onClick={() => { setActiveTrip(trip); setView(ViewState.TRIP_DETAIL); }}
-                        className="group bg-white rounded-xl shadow-sm hover:shadow-md transition-all border border-slate-100 cursor-pointer overflow-hidden flex flex-col"
+                <div className="flex items-center gap-4">
+                    <button onClick={handleLogout} className="text-slate-500 hover:text-slate-800 text-sm flex items-center gap-1">
+                        <LogOut size={16} /> Logg ut
+                    </button>
+                    <button 
+                        onClick={() => setIsTripModalOpen(true)}
+                        className="bg-blue-600 text-white px-5 py-3 rounded-lg shadow-md hover:bg-blue-700 flex items-center gap-2 font-medium transition-colors"
                     >
-                        <div className="h-32 bg-gradient-to-r from-blue-500 to-teal-400 p-6 relative">
-                            <div className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity">
-                                <button 
-                                    onClick={(e) => handleDeleteTrip(e, trip.id)}
-                                    className="p-2 bg-white/20 text-white hover:bg-white/40 rounded-full"
-                                >
-                                    <Trash2 size={16} />
-                                </button>
+                        <Plus size={20} /> Ny tur
+                    </button>
+                </div>
+            </header>
+            
+            {isLoading ? (
+                <div className="flex justify-center py-20">
+                     <Loader2 className="animate-spin text-blue-600" size={48} />
+                </div>
+            ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    {trips.length === 0 && (
+                        <div className="col-span-full text-center py-20 bg-slate-100 rounded-xl border-2 border-dashed border-slate-300">
+                            <div className="inline-block p-4 bg-white rounded-full mb-4 shadow-sm">
+                                <MapIcon className="text-slate-400" size={48} />
                             </div>
-                            <h3 className="text-2xl font-bold text-white truncate shadow-black drop-shadow-md">{trip.title}</h3>
+                            <h3 className="text-xl font-semibold text-slate-700 mb-2">Ingen turer enda</h3>
+                            <p className="text-slate-500 mb-6">Start din første reise for å fylle opp hytteboka.</p>
+                            <button onClick={() => setIsTripModalOpen(true)} className="text-blue-600 font-medium hover:underline">Opprett ny tur</button>
                         </div>
-                        <div className="p-6 flex-1 flex flex-col">
-                            <div className="flex items-center text-slate-500 text-sm mb-3 gap-2">
-                                <Calendar size={14} />
-                                <span>Startet {new Date(trip.startDate).toLocaleDateString('no-NO')}</span>
+                    )}
+                    
+                    {trips.map(trip => (
+                        <div 
+                            key={trip.id} 
+                            onClick={() => { setActiveTrip(trip); setView(ViewState.TRIP_DETAIL); }}
+                            className="group bg-white rounded-xl shadow-sm hover:shadow-md transition-all border border-slate-100 cursor-pointer overflow-hidden flex flex-col"
+                        >
+                            <div className="h-32 bg-gradient-to-r from-blue-500 to-teal-400 p-6 relative">
+                                <div className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity flex gap-2">
+                                    <button 
+                                        onClick={(e) => handleDeleteTrip(e, trip.id)}
+                                        className="p-2 bg-white/20 text-white hover:bg-white/40 rounded-full"
+                                    >
+                                        <Trash2 size={16} />
+                                    </button>
+                                </div>
+                                <h3 className="text-2xl font-bold text-white truncate shadow-black drop-shadow-md">{trip.title}</h3>
+                                {trip.location && (
+                                    <div className="flex items-center gap-1 text-white/90 text-sm mt-1 font-medium">
+                                        <MapPin size={14} />
+                                        <span>{trip.location}</span>
+                                    </div>
+                                )}
                             </div>
-                            <p className="text-slate-600 line-clamp-3 flex-1">{trip.description}</p>
-                            <div className="mt-4 pt-4 border-t border-slate-100 flex justify-between items-center">
-                                <span className="text-xs font-semibold text-blue-600 uppercase tracking-wider">Åpne boka</span>
-                                <ChevronLeft className="rotate-180 text-slate-400 group-hover:translate-x-1 transition-transform" size={16} />
+                            <div className="p-6 flex-1 flex flex-col">
+                                <div className="flex items-center text-slate-500 text-sm mb-3 gap-2">
+                                    <Calendar size={14} />
+                                    <span>Startet {new Date(trip.startDate).toLocaleDateString('no-NO')}</span>
+                                </div>
+                                <p className="text-slate-600 line-clamp-3 flex-1">{trip.description}</p>
+                                <div className="mt-4 pt-4 border-t border-slate-100 flex justify-between items-center">
+                                    <span className="text-xs font-semibold text-blue-600 uppercase tracking-wider">Åpne boka</span>
+                                    <ChevronLeft className="rotate-180 text-slate-400 group-hover:translate-x-1 transition-transform" size={16} />
+                                </div>
                             </div>
                         </div>
-                    </div>
-                ))}
-            </div>
+                    ))}
+                </div>
+            )}
         </div>
     );
 
     const renderTripDetail = () => {
         if (!activeTrip) return null;
 
-        // Map markers - Prepare rich data for the map
+        // Map markers
         const mapEntries = tripEntries
             .filter(e => e.location)
             .map(e => ({
@@ -536,8 +827,6 @@ const App: React.FC = () => {
                 snippet: e.content.length > 100 ? e.content.substring(0, 97) + '...' : e.content
             }));
             
-        // Beregn rute kronologisk (Eldst -> Nyest) for å tegne linjen i riktig rekkefølge.
-        // tripEntries kommer fra storage sortert Nyest -> Eldst (for journalvisning).
         const routePath = [...tripEntries]
             .filter(e => e.location)
             .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
@@ -559,20 +848,42 @@ const App: React.FC = () => {
                             <p className="text-xs text-slate-500">{new Date(activeTrip.startDate).toLocaleDateString('no-NO')} - {tripEntries.length} oppslag</p>
                         </div>
                     </div>
-                    <button 
-                        onClick={() => setIsEntryModalOpen(true)}
-                        className="bg-blue-600 text-white px-4 py-2 rounded-md shadow-sm hover:bg-blue-700 flex items-center gap-2"
-                    >
-                        <Edit3 size={16} /> Skriv i boka
-                    </button>
+                    <div className="flex items-center gap-3">
+                        <button 
+                            onClick={() => setIsShareModalOpen(true)}
+                            className="text-slate-600 hover:bg-slate-100 p-2 rounded-md flex items-center gap-2 text-sm font-medium"
+                            title="Inviter gjester"
+                        >
+                            <QrCode size={20} />
+                            <span className="hidden sm:inline">Inviter</span>
+                        </button>
+                        
+                        <button 
+                            onClick={() => setIsEntryModalOpen(true)}
+                            className="bg-blue-600 text-white px-4 py-2 rounded-md shadow-sm hover:bg-blue-700 flex items-center gap-2"
+                        >
+                            <Edit3 size={16} /> Skriv i boka
+                        </button>
+                    </div>
                 </div>
 
                 {/* Content */}
-                <div className="flex-1 flex overflow-hidden">
-                    {/* Left: Map (Hidden on mobile, typically) */}
+                <div className="flex-1 flex overflow-hidden relative">
+                    {/* Loading overlay for trip detail */}
+                    {isLoading && (
+                        <div className="absolute inset-0 bg-white/50 flex items-center justify-center z-50">
+                            <Loader2 className="animate-spin text-blue-600" size={32} />
+                        </div>
+                    )}
+
+                    {/* Left: Map */}
                     <div className="hidden md:block w-1/3 lg:w-2/5 h-full bg-slate-200 relative border-r border-slate-300">
-                       <MapComponent entries={mapEntries} route={routePath} />
-                       {mapEntries.length === 0 && (
+                       <MapComponent 
+                           entries={mapEntries} 
+                           route={routePath} 
+                           onMapClick={handleMapClick} 
+                        />
+                       {mapEntries.length === 0 && !isLoading && (
                            <div className="absolute inset-0 flex items-center justify-center bg-slate-100/80 z-[1000] pointer-events-none">
                                <p className="text-slate-500 bg-white px-4 py-2 rounded shadow">Ingen kartdata enda</p>
                            </div>
@@ -582,7 +893,7 @@ const App: React.FC = () => {
                     {/* Right: Journal */}
                     <div className="flex-1 overflow-y-auto p-4 md:p-8 bg-[url('https://www.transparenttextures.com/patterns/paper.png')] bg-amber-50">
                         <div className="max-w-3xl mx-auto space-y-8">
-                            {tripEntries.length === 0 && (
+                            {tripEntries.length === 0 && !isLoading && (
                                 <div className="text-center py-20 opacity-60">
                                     <Book size={64} className="mx-auto mb-4 text-amber-800" />
                                     <h2 className="text-2xl font-serif text-amber-900 mb-2">Hytteboka er tom</h2>
@@ -590,68 +901,73 @@ const App: React.FC = () => {
                                 </div>
                             )}
 
-                            {tripEntries.map((entry) => (
-                                <div key={entry.id} className="bg-white shadow-sm border border-amber-100 rounded-lg overflow-hidden relative group">
-                                    {/* Action Buttons */}
-                                    <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-white/80 rounded-md p-1 shadow-sm z-10">
-                                        <button 
-                                            onClick={() => handleEditEntry(entry)}
-                                            className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded"
-                                            title="Rediger"
-                                        >
-                                            <Edit3 size={16} />
-                                        </button>
-                                        <button 
-                                            onClick={() => handleDeleteEntry(entry.id)}
-                                            className="p-1.5 text-slate-500 hover:text-red-600 hover:bg-red-50 rounded"
-                                            title="Slett"
-                                        >
-                                            <Trash2 size={16} />
-                                        </button>
-                                    </div>
-
-                                    {/* Header */}
-                                    <div className="bg-amber-100/50 px-6 py-3 border-b border-amber-100 flex justify-between items-center">
-                                        <div className="flex items-center gap-3 text-amber-900 font-semibold">
-                                            <div className="flex items-center gap-1">
-                                                <Calendar size={16} />
-                                                <span>{new Date(entry.date).toLocaleDateString('no-NO', { weekday: 'long', day: 'numeric', month: 'long' })}</span>
-                                            </div>
-                                            <div className="flex items-center gap-1 text-sm font-normal opacity-80">
-                                                <Clock size={14} />
-                                                <span>kl. {new Date(entry.date).toLocaleTimeString('no-NO', { hour: '2-digit', minute: '2-digit' })}</span>
-                                            </div>
-                                        </div>
-                                        {entry.location && (
-                                            <div className="flex items-center gap-1 text-sm text-amber-800 bg-white/50 px-2 py-1 rounded-full">
-                                                <MapPin size={12} />
-                                                {entry.location.name}
-                                            </div>
-                                        )}
-                                    </div>
-
-                                    {/* Body */}
-                                    <div className="p-6 md:p-8">
-                                        <div className="prose font-serif text-slate-800 whitespace-pre-wrap text-lg leading-relaxed">
-                                            {entry.content}
-                                        </div>
-
-                                        {entry.images.length > 0 && (
-                                            <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                                {entry.images.map((img, i) => (
-                                                    <img key={i} src={img} alt="Journal entry" className="rounded-lg border border-slate-200 shadow-sm object-cover w-full h-64" />
-                                                ))}
+                            {tripEntries.map((entry) => {
+                                const canModify = entry.authorId === currentUser.id || currentUser.role === 'OWNER';
+                                return (
+                                    <div key={entry.id} className="bg-white shadow-sm border border-amber-100 rounded-lg overflow-hidden relative group">
+                                        {/* Action Buttons */}
+                                        {canModify && (
+                                            <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-white/80 rounded-md p-1 shadow-sm z-10">
+                                                <button 
+                                                    onClick={() => handleEditEntry(entry)}
+                                                    className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded"
+                                                    title="Rediger"
+                                                >
+                                                    <Edit3 size={16} />
+                                                </button>
+                                                <button 
+                                                    onClick={() => handleDeleteEntry(entry)}
+                                                    className="p-1.5 text-slate-500 hover:text-red-600 hover:bg-red-50 rounded"
+                                                    title="Slett"
+                                                >
+                                                    <Trash2 size={16} />
+                                                </button>
                                             </div>
                                         )}
 
-                                        <div className="mt-8 flex justify-end">
-                                            <span className="font-handwriting text-slate-500 italic pr-4 font-serif">
-                                                – {entry.author || 'Anonym'}
-                                            </span>
+                                        {/* Header */}
+                                        <div className="bg-amber-100/50 px-6 py-3 border-b border-amber-100 flex justify-between items-center">
+                                            <div className="flex items-center gap-3 text-amber-900 font-semibold">
+                                                <div className="flex items-center gap-1">
+                                                    <Calendar size={16} />
+                                                    <span>{new Date(entry.date).toLocaleDateString('no-NO', { weekday: 'long', day: 'numeric', month: 'long' })}</span>
+                                                </div>
+                                                <div className="flex items-center gap-1 text-sm font-normal opacity-80">
+                                                    <Clock size={14} />
+                                                    <span>kl. {new Date(entry.date).toLocaleTimeString('no-NO', { hour: '2-digit', minute: '2-digit' })}</span>
+                                                </div>
+                                            </div>
+                                            {entry.location && (
+                                                <div className="flex items-center gap-1 text-sm text-amber-800 bg-white/50 px-2 py-1 rounded-full">
+                                                    <MapPin size={12} />
+                                                    {entry.location.name}
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        {/* Body */}
+                                        <div className="p-6 md:p-8">
+                                            <div className="prose font-serif text-slate-800 whitespace-pre-wrap text-lg leading-relaxed">
+                                                {entry.content}
+                                            </div>
+
+                                            {entry.images.length > 0 && (
+                                                <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                                    {entry.images.map((img, i) => (
+                                                        <img key={i} src={img} alt="Journal entry" className="rounded-lg border border-slate-200 shadow-sm object-cover w-full h-64" />
+                                                    ))}
+                                                </div>
+                                            )}
+
+                                            <div className="mt-8 flex justify-end">
+                                                <span className="font-handwriting text-slate-500 italic pr-4 font-serif">
+                                                    – {entry.author || 'Anonym'}
+                                                </span>
+                                            </div>
                                         </div>
                                     </div>
-                                </div>
-                            ))}
+                                );
+                            })}
                         </div>
                     </div>
                 </div>
@@ -668,8 +984,18 @@ const App: React.FC = () => {
                 isOpen={isTripModalOpen} 
                 onClose={() => setIsTripModalOpen(false)} 
                 onSave={handleSaveTrip}
-                existingTrip={undefined} 
+                currentUser={currentUser!}
+                existingTrip={undefined}
+                isSaving={isSaving}
             />
+            
+            {activeTrip && (
+                <ShareModal 
+                    isOpen={isShareModalOpen}
+                    onClose={() => setIsShareModalOpen(false)}
+                    trip={activeTrip}
+                />
+            )}
 
             {activeTrip && (
                 <EntryModal 
@@ -677,7 +1003,10 @@ const App: React.FC = () => {
                     onClose={closeEntryModal}
                     onSave={handleSaveEntry}
                     tripId={activeTrip.id}
+                    currentUser={currentUser!}
                     existingEntry={entryToEdit}
+                    initialLocation={clickedMapLocation}
+                    isSaving={isSaving}
                 />
             )}
         </>

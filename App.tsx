@@ -24,7 +24,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { Trip, JournalEntry, ViewState, User } from './types';
 import * as storage from './services/storageService';
 import * as gemini from './services/geminiService';
-import { supabase } from './services/supabaseClient';
+import { pb } from './services/pocketbaseClient';
 import MapComponent from './components/MapComponent';
 
 // --- Auth Component ---
@@ -40,15 +40,7 @@ const AuthScreen: React.FC<{ onLogin: () => void }> = ({ onLogin }) => {
         setMessage('');
         
         try {
-            const { error } = await supabase.auth.signInWithOtp({ 
-                email,
-                options: {
-                    // In a real hosted app, this would be your actual URL
-                    emailRedirectTo: window.location.origin 
-                }
-            });
-            
-            if (error) throw error;
+            await pb.collection('users').requestMagicLink(email);
             setMessage('Sjekk e-posten din for innloggingslink!');
         } catch (error: any) {
             setMessage(error.message || 'En feil oppstod');
@@ -575,15 +567,14 @@ const App: React.FC = () => {
         checkAuth();
 
         // Listen for auth changes
-        const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
-             if (event === 'SIGNED_IN' || event === 'SIGNED_OUT') {
-                 const user = await storage.getCurrentUser();
-                 setCurrentUser(user);
-             }
+        pb.authStore.onChange(async () => {
+            const user = await storage.getCurrentUser();
+            setCurrentUser(user);
         });
 
         return () => {
-            authListener.subscription.unsubscribe();
+            // PocketBase onChange doesn't return an unsubscribe by default in some versions, 
+            // but we can pass a function to remove it if needed. 
         };
     }, []);
 

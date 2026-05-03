@@ -1,193 +1,162 @@
 import { Trip, JournalEntry, User } from '../types';
-import { supabase } from './supabaseClient';
+import { pb } from './pocketbaseClient';
 import { v4 as uuidv4 } from 'uuid';
 
 // --- Auth & Users ---
 
 export const getCurrentUser = async (): Promise<User | null> => {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session?.user) return null;
+    if (!pb.authStore.isValid) return null;
 
-    // Fetch profile data
-    const { data: profile } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', session.user.id)
-        .single();
-
-    if (profile) {
-        return {
-            id: profile.id,
-            name: profile.full_name || session.user.email?.split('@')[0] || 'Bruker',
-            role: profile.role || 'MEMBER',
-            avatar: profile.avatar_url
-        };
-    }
+    const user = pb.authStore.model;
+    if (!user) return null;
 
     return {
-        id: session.user.id,
-        name: session.user.email?.split('@')[0] || 'Bruker',
-        role: 'MEMBER',
+        id: user.id,
+        name: user.name || user.email?.split('@')[0] || 'Bruker',
+        role: user.role || 'MEMBER',
+        avatar: user.avatar ? pb.getFileUrl(user, user.avatar) : undefined
     };
 };
 
 export const signInWithEmail = async (email: string) => {
-    // For demo purposes, we use magic link or simple sign up. 
-    // In a real app, you'd handle password or OTP.
-    // Let's assume simple password login for now.
-    // NOTE: This requires the user to have signed up first.
-    return await supabase.auth.signInWithOtp({ email });
+    // PocketBase supports passwordless auth via magic links (OTP) too
+    return await pb.collection('users').requestMagicLink(email);
 };
 
 export const signOut = async () => {
-    await supabase.auth.signOut();
+    pb.authStore.clear();
 };
 
 // --- Trips ---
 
 export const getTrips = async (): Promise<Trip[]> => {
-    const { data, error } = await supabase
-        .from('trips')
-        .select('*')
-        .order('start_date', { ascending: false });
+    try {
+        const records = await pb.collection('trips').getFullList({
+            sort: '-startDate',
+        });
 
-    if (error) {
+        return records.map((t: any) => ({
+            id: t.id,
+            ownerId: t.ownerId,
+            title: t.title,
+            location: t.location,
+            startDate: t.startDate,
+            endDate: t.endDate,
+            description: t.description,
+            shareCode: t.shareCode,
+            coverImage: t.coverImage ? pb.getFileUrl(t, t.coverImage) : undefined
+        }));
+    } catch (error) {
         console.error('Error fetching trips:', error);
         return [];
     }
-
-    // Map snake_case DB columns to camelCase types if necessary
-    // Assuming we created the table with columns matching our types or use mapping here
-    // For simplicity, let's assume columns are: id, owner_id, title, location, start_date, end_date, description, share_code
-    
-    return data.map((t: any) => ({
-        id: t.id,
-        ownerId: t.owner_id,
-        title: t.title,
-        location: t.location,
-        startDate: t.start_date,
-        endDate: t.end_date,
-        description: t.description,
-        shareCode: t.share_code,
-        coverImage: t.cover_image
-    }));
 };
 
 export const saveTrip = async (trip: Trip): Promise<Trip> => {
-    // Determine if insert or update
-    // We need to map camelCase to snake_case for DB
-    const dbTrip = {
-        id: trip.id,
-        owner_id: trip.ownerId,
+    const data = {
+        ownerId: trip.ownerId,
         title: trip.title,
         location: trip.location,
-        start_date: trip.startDate,
-        end_date: trip.endDate,
+        startDate: trip.startDate,
+        endDate: trip.endDate,
         description: trip.description,
-        share_code: trip.shareCode,
-        cover_image: trip.coverImage
+        shareCode: trip.shareCode,
     };
 
-    const { error } = await supabase
-        .from('trips')
-        .upsert(dbTrip);
-
-    if (error) throw error;
-    return trip;
+    try {
+        if (trip.id && trip.id.length >= 15) { // PocketBase IDs are usually 15 chars
+             await pb.collection('trips').update(trip.id, data);
+        } else {
+             const record = await pb.collection('trips').create(data);
+             trip.id = record.id;
+        }
+        return trip;
+    } catch (error) {
+        // Handle potential "id does not exist" by trying create if update fails
+        const record = await pb.collection('trips').create(data);
+        trip.id = record.id;
+        return trip;
+    }
 };
 
 export const deleteTrip = async (id: string): Promise<void> => {
-    const { error } = await supabase.from('trips').delete().eq('id', id);
-    if (error) throw error;
-    // Cascading delete in Postgres usually handles entries, but verify RLS.
+    await pb.collection('trips').delete(id);
 };
 
 // --- Entries ---
 
 export const getEntriesForTrip = async (tripId: string): Promise<JournalEntry[]> => {
-    const { data, error } = await supabase
-        .from('entries')
-        .select('*')
-        .eq('trip_id', tripId)
-        .order('date', { ascending: false });
+    try {
+        const records = await pb.collection('journal_entries').getFullList({
+            filter: `tripId = "${tripId}"`,
+            sort: '-date',
+        });
 
-    if (error) {
+        return records.map((e: any) => ({
+            id: e.id,
+            tripId: e.tripId,
+            date: e.date,
+            content: e.content,
+            location: e.location, // PocketBase handles JSON fields
+            images: e.images ? e.images.map((img: string) => pb.getFileUrl(e, img)) : [],
+            author: e.author,
+            authorId: e.authorId
+        }));
+    } catch (error) {
         console.error('Error fetching entries:', error);
         return [];
-    }
-
-    return data.map((e: any) => ({
-        id: e.id,
-        tripId: e.trip_id,
-        date: e.date,
-        content: e.content,
-        location: e.location, // JSONB column
-        images: e.images || [], // Array of URLs
-        author: e.author_name,
-        authorId: e.author_id
-    }));
-};
-
-// Helper to upload base64 image to Supabase Storage
-const uploadImage = async (base64Image: string): Promise<string> => {
-    try {
-        // Check if it's already a URL (from previous save)
-        if (base64Image.startsWith('http')) return base64Image;
-
-        // Convert Base64 to Blob
-        const res = await fetch(base64Image);
-        const blob = await res.blob();
-        
-        const fileName = `${uuidv4()}.jpg`;
-        const filePath = `journal_images/${fileName}`;
-
-        const { error: uploadError } = await supabase.storage
-            .from('images')
-            .upload(filePath, blob);
-
-        if (uploadError) throw uploadError;
-
-        const { data } = supabase.storage.from('images').getPublicUrl(filePath);
-        return data.publicUrl;
-    } catch (e) {
-        console.error("Image upload failed", e);
-        return base64Image; // Fallback (though DB might reject large string)
     }
 };
 
 export const saveEntry = async (entry: JournalEntry): Promise<JournalEntry> => {
-    // 1. Upload images first
-    const imageUrls: string[] = [];
-    for (const img of entry.images) {
-        const url = await uploadImage(img);
-        imageUrls.push(url);
+    // PocketBase handles file uploads directly via FormData
+    const formData = new FormData();
+    formData.append('tripId', entry.tripId);
+    formData.append('date', entry.date);
+    formData.append('content', entry.content);
+    formData.append('author', entry.author);
+    formData.append('authorId', entry.authorId || '');
+    
+    if (entry.location) {
+        formData.append('location', JSON.stringify(entry.location));
     }
 
-    const dbEntry = {
-        id: entry.id,
-        trip_id: entry.tripId,
-        date: entry.date,
-        content: entry.content,
-        location: entry.location,
-        images: imageUrls,
-        author_name: entry.author,
-        author_id: entry.authorId
-    };
+    // Handle images
+    for (const img of entry.images) {
+        // If it's already a URL, we don't need to re-upload (PB keeps existing if not sent, or we handle it)
+        // But for simplicity in this migration:
+        if (img.startsWith('data:')) {
+            const res = await fetch(img);
+            const blob = await res.blob();
+            formData.append('images', blob, `image_${uuidv4()}.jpg`);
+        }
+    }
 
-    const { error } = await supabase
-        .from('entries')
-        .upsert(dbEntry);
+    try {
+        let record;
+        if (entry.id && entry.id.length >= 15) {
+            record = await pb.collection('journal_entries').update(entry.id, formData);
+        } else {
+            record = await pb.collection('journal_entries').create(formData);
+        }
 
-    if (error) throw error;
-    
-    // Return entry with updated image URLs
-    return { ...entry, images: imageUrls };
+        return {
+            ...entry,
+            id: record.id,
+            images: record.images.map((img: string) => pb.getFileUrl(record, img))
+        };
+    } catch (error) {
+        const record = await pb.collection('journal_entries').create(formData);
+        return {
+            ...entry,
+            id: record.id,
+            images: record.images.map((img: string) => pb.getFileUrl(record, img))
+        };
+    }
 };
 
 export const deleteEntry = async (id: string): Promise<void> => {
-    const { error } = await supabase.from('entries').delete().eq('id', id);
-    if (error) throw error;
+    await pb.collection('journal_entries').delete(id);
 };
 
-// --- Mock User Helpers (Deprecated but kept for signature compatibility if needed) ---
 export const getAvailableUsers = (): User[] => [];

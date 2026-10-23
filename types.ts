@@ -24,6 +24,7 @@ export interface JournalEntry {
   images: string[]; // Base64 strings for simplicity in this demo
   author: string;
   authorId?: string; // If linked to a registered user
+  createdAt?: string;
 }
 
 export interface Trip {
@@ -36,10 +37,30 @@ export interface Trip {
   description: string;
   coverImage?: string;
   shareCode?: string; // Unique code for QR generation
+  createdAt?: string;
+  status: TripStatus;
 }
 
 export enum ViewState {
   DASHBOARD = 'DASHBOARD',
   TRIP_DETAIL = 'TRIP_DETAIL',
   CREATE_TRIP = 'CREATE_TRIP',
+}
+export enum TripStatus {
+    PLANNING = 'PLANNING',
+    ONGOING = 'ONGOING',
+    COMPLETED = 'COMPLETED',
+}
+
+export interface PlannedStop {
+    id: string;
+    trip_id: string;
+    order_index: number;
+    name: string;
+    description?: string;
+    lat: number;
+    lng: number;
+    planned_date?: string;
+    created_at: string;
+    updated_at: string;
 }

@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@google/genai": "^1.30.0",
+    "@tailwindcss/postcss": "^4.3.0",
     "leaflet": "^1.9.4",
     "lucide-react": "^0.554.0",
     "pocketbase": "^0.26.8",
